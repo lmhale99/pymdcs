@@ -1,0 +1,7 @@
+# Local configuration file
+.mdcs
+
+# Compiled python code
+__pycache__/
+.ipynb_checkpoints/
+mdcs.pyc

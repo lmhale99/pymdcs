@@ -1,0 +1,198 @@
+#! /usr/bin/env python
+
+# Standard Python libraries
+from __future__ import (print_function, division, absolute_import)
+import os
+import sys
+import glob
+import getpass
+import argparse
+
+import mdcs
+
+ispython2 = sys.version_info[0] == 2
+ispython3 = sys.version_info[0] == 3
+
+parser = argparse.ArgumentParser(description='MDCS API command line interface')
+subparsers = parser.add_subparsers(title='primary choice', dest='primary')
+
+# login
+parser_login = subparsers.add_parser('login', help='interact with stored login information')
+parser_login.add_argument('action', choices=['show', 'add', 'forget'], help='action')
+parser_login.add_argument('database', nargs='?', default=None, help='database name')
+
+# curate
+parser_curate = subparsers.add_parser('curate', help='curate records to a database')
+parser_curate.add_argument('database', help='database name')
+parser_curate.add_argument('template', help='template name, file name, or id')
+parser_curate.add_argument('files', nargs='+', help='path to file(s) to upload')
+
+# select
+parser_select = subparsers.add_parser('select', help='explore curated records using metadata')
+parser_select.add_argument('database', help='database name')
+parser_select.add_argument('record', nargs='?', default=None, help='record name or id (optional)')
+parser_select.add_argument('-t', nargs='?', dest='template', help='template name, file name or id')
+parser_select.add_argument('-n', nargs='?', dest='title', default=None, help='record name')
+parser_select.add_argument('-i', nargs='?', dest='id', default=None, help='record id')
+parser_select.add_argument('-j', action='store_true', dest='download_json', help='download as json')
+parser_select.add_argument('-x', action='store_true', dest='download_xml', help='download as xml')
+
+# delete
+parser_delete = subparsers.add_parser('delete', help='delete curated record(s)')
+parser_delete.add_argument('database', help='database name')
+parser_delete.add_argument('record', nargs='?', default=None, help='record name or id')
+parser_delete.add_argument('-t', nargs='?', dest='template', help='template name, file name or id')
+parser_delete.add_argument('-n', nargs='?', dest='title', help='record name')
+parser_delete.add_argument('-i', nargs='?', dest='id', help='record id')
+
+# query
+
+# template
+parser_template = subparsers.add_parser('template', help='interact with templates')
+parser_template.add_argument('database', help='database name')
+subtemplates = parser_template.add_subparsers(title='action', dest='action')
+
+parser_template_list = subtemplates.add_parser('list', help='list templates')
+parser_template_list.add_argument('template', nargs='?', default=None, help='template name, file name, or id')
+
+
+# type
+
+# blob
+
+#Parse command line arguments
+args = parser.parse_args()
+# --------------------------------------------------------------------------- #
+
+def screen_input(prompt=''):
+    """
+    Replacement input function that is compatible with Python versions 2 and
+    3, as well as the mingw terminal.
+    
+    Parameters
+    ----------
+    prompt : str, optional
+        The screen prompt to use for asking for the input.
+        
+    Returns
+    -------
+    str
+        The user input.
+    """
+    
+    # Flush prompt to work interactively with mingw
+    print(prompt, end=' ')
+    sys.stdout.flush()
+    
+    # Call version dependent function
+    if ispython3:
+        return input()
+    elif ispython2:
+        return raw_input()
+    else:
+        raise ValueError('Unsipported Python version')
+
+# --------------------------------------------------------------------------- #
+
+# Actions for login
+if args.primary == 'login':
+    if args.action == 'show':
+        if args.database is None:
+            print('Saved database names:')
+            for name in mdcs.database_list():
+                print(' ', name)
+        else:
+            access_dict = mdcs.database_info(args.database)
+            print('Saved content for database', args.database+':')
+            print('  host =', access_dict['host'])
+            print('  user =', access_dict['user'])
+            print('  cert =', access_dict['cert'])
+            if access_dict['pswd']:
+                print('  pswd stored')
+            else:
+                print('  pswd not stored')
+    
+    elif args.action == 'add':
+        if args.database is None:
+            database = screen_input('Enter database name to save as:')
+        else:
+            database = args.database
+        host = screen_input('Enter host url:')
+        user = screen_input('Enter user name:')
+        pswd = getpass.getpass(prompt='Enter password:')
+        sys.stdout.flush()
+        cert = screen_input('Enter cert path (if needed):')
+        if cert == '':
+            cert = None
+        include_pswd = screen_input('Store password (y/n, default n):')
+        if include_pswd == '' or include_pswd == 'n':
+            include_pswd = False
+        elif include_pswd == 'y':
+            include_pswd = True
+        else:
+            raise ValueError('Invalid option')
+        curator = mdcs.MDCS(host, user, pswd=pswd, cert=cert)
+        curator.database_remember(database, include_pswd)
+    
+    elif args.action == 'forget':
+        if args.database is None:
+            database = screen_input('Enter database name to save as:')
+        else:
+            database = args.database
+        mdcs.database_forget(database)
+
+# Actions for curate
+elif args.primary == 'curate':
+    curator = mdcs.database_load(args.database)
+    for files in args.files:
+        for file in glob.iglob(files):
+            title = os.path.splitext(os.path.basename(file))[0]
+            curator.curate(file, title, args.template)
+
+# Actions for select
+elif args.primary == 'select':
+    curator = mdcs.database_load(args.database)
+    if args.download_json:
+        if args.record is None:
+            jsonrecords = curator.select(title=args.title, id=args.id,
+                                        template=args.template, format='json')
+        else:
+            jsonrecords = curator.select(args.record, title=args.title,
+                                         id=args.id, template=args.template,
+                                         format='json')
+        for record in jsonrecords.itertuples():
+            with open(record.title+'.json', 'w') as f:
+                f.write(record.content)
+    
+    if args.download_xml or not (args.download_json and args.download_xml):
+        if args.record is None:
+            xmlrecords = curator.select(title=args.title, id=args.id,
+                                        template=args.template, format='xml')
+        else:
+            xmlrecords = curator.select(args.record, title=args.title,
+                                        id=args.id, template=args.template,
+                                        format='xml')
+        if args.download_xml:
+            for record in xmlrecords.itertuples():
+                with open(record.title+'.xml', 'w') as f:
+                    f.write(record.content)
+        else:
+            for record in xmlrecords.itertuples():
+                print(record.title)
+
+# Actions for delete
+elif args.primary == 'delete':
+    curator = mdcs.database_load(args.database)
+    if args.record is None:
+        records = curator.select(title=args.title, id=args.id,
+                                 template=args.template, format='xml')
+    else:
+        records = curator.select(args.record, title=args.title,
+                                 id=args.id, template=args.template,
+                                 format='xml')
+    if len(records) > 0:
+        print(len(records), 'matching records found.')
+        yesno = screen_input('Delete? (must type "yes" to confirm):')
+        if yesno == 'yes':
+            for i, record in records.iterrows():
+                curator.delete(record)
