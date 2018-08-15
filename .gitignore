@@ -3,5 +3,6 @@
 
 # Compiled python code
 __pycache__/
+mdcs.egg-info/
 .ipynb_checkpoints/
 mdcs.pyc
