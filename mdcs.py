@@ -15,7 +15,10 @@ import pandas as pd
 # http://docs.python-requests.org
 import requests
 
-__version__ = '0.2'
+# https://lxml.de/index.html
+from lxml import etree
+
+__version__ = '0.3'
 __author__ = "Lucas M Hale"
 
 def screen_input(prompt=''):
@@ -473,7 +476,52 @@ class MDCS(object):
         r.raise_for_status()
         return pd.DataFrame(r.json(object_pairs_hook=OrderedDict))
     
-    def curate(self, content, title, template):
+    def assertvalid(self, content, template):
+        """
+        Validates a record with the given schema.
+        
+        Parameters
+        ----------
+        content : str
+            The xml content or path to a file containing the content of the
+            record to validate.
+        template : pandas.Series, str or dict, optional
+            The template associated with the record.  If str, will be searched
+            against the template's id, title, and filename.  If dict, allows
+            multiple template parameters to be specified in matching correct
+            template.
+        
+        Raises
+        ------
+        lxml.etree.DocumentInvalid
+            If the content is not valid with the template.
+        """
+        # Handle template
+        if isinstance(template, pd.Series):
+            pass
+        elif isinstance(template, dict):
+            template = self.template_select_one(**template)
+        else:
+            template = self.template_select_one(template)
+        
+        # Load schema
+        xmlschema = etree.XMLSchema(etree.fromstring(template.content.encode('UTF-8')))
+        
+        # Parse content
+        try:
+            assert os.path.isfile(content)
+        except:
+            try:
+                xml = etree.fromstring(content.encode('UTF-8'))
+            except:
+                xml = etree.fromstring(content)
+        else:
+            xml = etree.parse(content)
+        
+        # Validate
+        xmlschema.assertValid(xml)
+    
+    def curate(self, content, title, template, validate=True):
         """
         Curates (uploads) a record to the MDCS instance.
         
@@ -489,6 +537,9 @@ class MDCS(object):
             against the template's id, title, and filename.  If dict, allows
             multiple template parameters to be specified in matching correct
             template.
+        validate : bool, optional
+            If True, a local validation of the content to template will be
+            performed.  Informative errors will be raised if not valid.
         """
         
         # Handle template
@@ -510,6 +561,10 @@ class MDCS(object):
                 content = f.read(content)
         except:
             pass
+        
+        # Validate content to template
+        if validate:
+            self.assertvalid(content, template)
         
         # Build requests parameters
         data = {}
@@ -549,7 +604,7 @@ class MDCS(object):
         elif 'record' in kwargs and kwargs['record'] is not None:
             if len(args) > 0 or len(kwargs) > 1:
                 raise ValueError('record cannot be given with any other parameters')
-            record = record
+            record = kwargs['record']
         else:
            record = self.select_one(*args, **kwargs)
         
@@ -564,6 +619,59 @@ class MDCS(object):
             r = requests.delete(url, params=params, auth=(self.user, self.__pswd), verify=self.cert)
         r.raise_for_status()
         return r.text
+    
+    def update(self, content, *args, **kwargs):
+        """
+        Updates a record entry in the MDCS instance.  This deletes the current
+        matching record and curates the new content to the title+template of
+        the deleted record. 
+        
+        Parameters
+        ----------
+        content : str
+            The xml content or path to a file containing the content of the
+            record to update.
+        record : pandas.Series, optional
+            The record to replace.  Cannot be given with the parameters below.
+        title : str, optional
+            The title assigned to the record.
+        id : str, optional
+            The unique id of the record to delete.  Note that the updated
+            record will have a different id.
+        template : pandas.Series, str or dict, optional
+            The template associated with the record.  If str, will be searched
+            against the template's id, title, and filename.  If dict, allows
+            multiple template parameters to be specified in matching correct
+            template.
+        validate : bool, optional
+            If True, a local validation of the content to template will be
+            performed.  Informative errors will be raised if not valid.
+        """
+        validate = kwargs.get('validate', True)
+        
+        # Handle record
+        if len(args) == 1 and isinstance(args[0], pd.Series):
+            record = args[0]
+        elif 'record' in kwargs and kwargs['record'] is not None:
+            if len(args) > 0 or len(kwargs) > 1:
+                raise ValueError('record cannot be given with any other parameters')
+            record = kwargs['record']
+        else:
+           record = self.select_one(*args, **kwargs)
+           
+        # Handle title and template
+        title = record.title
+        template = self.template_select_one(id=record.schema)
+        
+        # Validate content to template
+        if validate:
+            self.assertvalid(content, template)
+        
+        # Delete current record
+        self.delete(record=record)
+        
+        # Curate the new content
+        self.curate(content, title, template, validate=False)
     
     def template_select(self, *args, **kwargs):
         """
